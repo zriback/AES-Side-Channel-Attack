@@ -1,6 +1,8 @@
 import json
 import numpy as np
 
+SAMPLES_LIMIT = 5000
+
 DATA_FILEPATH = 'data/t00.json'
 T4 = [
 0x52, 0x9, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
@@ -21,24 +23,82 @@ T4 = [
 0x17, 0x2b, 0x4, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0xc, 0x7d
 ]
 
+# Table of average times (i,j,delta)
+t = np.zeros((16,16,256), dtype=np.float32)
+
+# Keep track of how many values have contributed so far
+counts = np.zeros((16,16,256), dtype=int)
+
+# holds the minimum delta value for each i,j pair (referred to as delta prime in the paper)
+# Each delta_prime[i,j] becomes an accurate guess for the value of k[i] ^ k[j]
+delta_primes = np.empty((16,16), dtype=np.float32)
+
+def get_byte(block: str, index: int) -> int:
+    """
+    Gets the byte in string format at the specified index
+    e.g. get_byte('78d2724b0b4815a2b9655c5f8ab548f5', 2) -> 0x72
+    """
+    return int(block[index*2:index*2+2], 16)
+
+
 def load_data(data_filepath: str) -> dict:
     with open(data_filepath, 'r') as f:
         data = json.load(f)
     return data
 
 
-def extract_data(data: dict):
-    pass
-
-def calculate_statistics(data: dict):
-    pass
-
-
 def main():
     data = load_data(DATA_FILEPATH)
     traces = data['traces']
+    k10 = data['k10']
 
     print(f'Loaded {len(traces)} traces from the data file.')
+
+    # Keep track of the total average encrypted time for all samples
+    total_average = 0
+
+    for sample_index in range(SAMPLES_LIMIT):
+        sample = traces[sample_index]
+        ct = sample['ct']
+        time = sample['t']
+
+        # Update the total average
+        if sample_index == 0:
+            total_average = time
+        else:
+            total_average = (total_average * sample_index + time) / (sample_index + 1)
+
+        for i in range(16):
+            for j in range(16):
+                ci = get_byte(ct, i)
+                cj = get_byte(ct, j)
+                delta = ci ^ cj
+
+                # Update the running average
+                n = counts[i][j][delta]
+                if n == 0:
+                    t[i][j][delta] = time
+                    counts[i][j][delta] = 1
+                else:
+                    current_avg = t[i][j][delta]
+                    t[i][j][delta] = (current_avg * n + time) / (n + 1)
+                    counts[i][j][delta] = n + 1
+    
+    print(f'Analyzed {SAMPLES_LIMIT} samples')
+    print(f'Average encryption time: {total_average}')
+
+    # Find the smallest delta for each i,j pair
+    for i in range(16):
+        for j in range(16):
+            # Must ignore values that are (not possible, just means we did not have enough data)
+            # For the full test we should always have enough data. For testing and smaller values of SAMPLE_LIMIT, we might not, though
+            min_delta = np.argmin([val for val in t[i][j] if val > 0])
+            delta_primes[i][j] = min_delta
+    
+    print('Delta primes for each i,j:')
+    print(delta_primes)
+
+    
 
 
 
