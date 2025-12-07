@@ -1,0 +1,228 @@
+import json
+import time
+import random
+import numpy as np
+from Crypto.Cipher import AES
+import multiprocessing as mp
+
+DEFAULT_COLOR = '\x1b[39m'
+RED_COLOR = '\x1b[31m'
+GREEN_COLOR = '\x1b[32m'
+
+# Easy function for converting a byte to a string
+byte_to_str = lambda x: f'{hex(x)[2:]:0>2}' 
+
+SAMPLES_LIMIT = 600000
+
+DATA_FILEPATH = 'data/t05_blind.json'
+
+# Table of average times (i,j,delta)
+t = np.zeros((16,16,256), dtype=np.float32)
+
+# Keep track of how many values have contributed so far
+counts = np.zeros((16,16,256), dtype=int)
+
+# Compute indices arrays
+index_i, index_j = np.indices((16,16))
+index_i = index_i.ravel()
+index_j = index_j.ravel()
+
+# holds the minimum delta value for each i,j pair (referred to as delta prime in the paper)
+# Each delta_prime[i,j] becomes an accurate guess for the value of k[i] ^ k[j]
+delta_primes = np.empty((16,16), dtype=np.float32)
+
+class DataLoader:
+    def __init__(self, traces, batch_size):
+        self.traces = traces
+        self.batch_size =  batch_size
+        self.samples_loaded = 0
+    
+    def load_samples(self):
+        result = self.traces[self.samples_loaded:self.samples_loaded+self.batch_size]
+        self.samples_loaded += self.batch_size
+        return result
+
+
+def get_k_from_k10(round10_hex: str) -> str:
+    # S-box
+    sbox = [
+        0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+        0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+        0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+        0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+        0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+        0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+        0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+        0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+        0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+        0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+        0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+        0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+        0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+        0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+        0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+        0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+    ]
+
+    # Rcon
+    rcon = [0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36]
+
+    def sub_word(w):
+        return bytes(sbox[b] for b in w)
+
+    def rot_word(w):
+        return w[1:] + w[:1]
+
+    def xor(a, b):
+        return bytes(x ^ y for x, y in zip(a, b))
+
+    # Convert input to 4 words
+    w = [None]*44
+    round10 = bytes.fromhex(round10_hex)
+    for i in range(4):
+        w[40+i] = round10[4*i:4*i+4] # type: ignore
+
+    # Reverse expand
+    for i in range(43, 3, -1):
+        if i % 4 == 0:
+            temp = xor(w[i], xor(sub_word(rot_word(w[i-1])), bytes([rcon[i//4],0,0,0])))
+        else:
+            temp = xor(w[i], w[i-1])
+        w[i-4] = temp # type: ignore
+
+    # Original key = W[0]..W[3]
+    original = b''.join(w[0:4]) # type: ignore
+    return original.hex()
+
+
+def get_byte(block: str, index: int) -> int:
+    """
+    Gets the byte in string format at the specified index
+    e.g. get_byte('78d2724b0b4815a2b9655c5f8ab548f5', 2) -> 0x72
+    """
+    return int(block[index*2:index*2+2], 16)
+
+
+def load_data(data_filepath: str) -> dict:
+    with open(data_filepath, 'r') as f:
+        data = json.load(f)
+    return data
+
+
+def calculate_delta_primes():
+    """Updates the global delta_primes using the global t"""
+    for i in range(16):
+        for j in range(16):
+            # Must ignore values that are not possible (just means we did not have enough data)
+            # For the full test we should always have enough data. For testing and smaller values of SAMPLE_LIMIT, we might not, though
+            min_delta = np.argmin([val for val in t[i][j] if val > 0])
+            delta_primes[i][j] = min_delta
+
+
+def update_t(ct, cycles):
+    ct_bytes = np.frombuffer(bytes.fromhex(ct), dtype=np.uint8)
+
+    delta = (ct_bytes[:, None] ^ ct_bytes[None, :]).ravel()
+    n = counts[index_i, index_j, delta]
+    t_old = t[index_i, index_j, delta]
+
+    # Calculate the new values
+    new = np.where(
+        n == 0,
+        cycles,
+        (t_old * n + cycles) / (n + 1)
+    )
+
+    # Write those updates
+    t[index_i, index_j, delta] = new
+    counts[index_i, index_j, delta] = n + 1
+
+
+def guess_key_worker(delta_primes, test_pt, test_ct, samples_loaded) -> tuple[bool, str|None, int]:
+    """Tries to brute force the key. Returns true if it finds it"""
+    # Will try brute force guessing to see how many bytes of the key we can get right
+    # Try every byte for the first byte of the round 10 key. The other 15 bytes are calculated using the offsets delta[0,i] for 0 <= i <= 15
+    # Then does the same thing for all the other bytes because only one of the rows might give us the answer
+    for test_byte_index in range(16):
+        for candidate_byte in range(255):
+            candidate_k10_list = [(candidate_byte ^ int(val)) for val in delta_primes[test_byte_index]]
+            candidate_k10_str = ''.join(byte_to_str(val) for val in candidate_k10_list)
+            candidate_k_str = get_k_from_k10(candidate_k10_str)
+
+            cipher = AES.new(bytes.fromhex(candidate_k_str), AES.MODE_ECB)
+            result_ct = cipher.encrypt(bytes.fromhex(test_pt)).hex()
+
+            # print_result = f'{GREEN_COLOR}SUCCESS{DEFAULT_COLOR}' if result_ct == test_ct else f'{RED_COLOR}FAILED{DEFAULT_COLOR}'
+            # print(f'k10={candidate_k10_str}, k={candidate_k_str}: {print_result}')
+
+            if test_ct == result_ct:
+                return True, candidate_k_str, samples_loaded
+    # None of the rows in delta prime worked
+    return False, None, samples_loaded
+
+
+def find_key():
+    # reset out global structures
+    t.fill(0)
+    counts.fill(0)
+
+    data = load_data(DATA_FILEPATH)
+    traces = data['traces']
+    random.shuffle(traces)
+
+    test_pt = traces[0]['pt']
+    test_ct = traces[0]['ct']
+
+    print(f'Loaded {len(traces)} traces from the data file.')
+
+    data_loader = DataLoader(traces, 1_000)
+
+    pool = mp.Pool(processes=4)
+    jobs = []
+    key_found = False
+
+    start_time = time.time()
+    while True:
+        # Load batch size of samples
+        for sample in data_loader.load_samples():
+            ct = sample['ct']
+            cycles = sample['t']
+            update_t(ct, cycles)
+        
+        # print(f'Analyzed {data_loader.samples_loaded} samples')
+        # print(f'Elapsed time: {(time.time() - start_time):.2f} seconds')
+        # print()
+
+        # Find the smallest delta for each i,j pair
+        calculate_delta_primes()
+
+        worker = pool.apply_async(
+            guess_key_worker,
+            args=(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
+        )
+        jobs.append(worker)
+
+        # Check if we've got any results from the pool
+        for job in jobs:
+            if job.ready():
+                status, key, samples_required = job.get()
+                if status:
+                    key_found = True
+                    print('FOUND THE KEY!', key)
+                    break
+        if key_found:
+            pool.terminate()
+            pool.join()
+            break
+    
+    print(f'Total elapsed time: {time.time() - start_time:.2f}')
+    print(f'Samples required: {samples_required}')
+    return samples_required
+
+
+def main():
+    find_key()
+
+
+if __name__ == '__main__':
+    main()
