@@ -14,6 +14,8 @@ byte_to_str = lambda x: f'{hex(x)[2:]:0>2}'
 
 SAMPLES_LIMIT = 600000
 
+THREADS = 4
+
 DATA_FILEPATH = 'data/t05_blind.json'
 
 # Table of average times (i,j,delta)
@@ -161,8 +163,8 @@ def guess_key_worker(delta_primes, test_pt, test_ct, samples_loaded) -> tuple[bo
     return False, None, samples_loaded
 
 
-def find_key():
-    # reset out global structures
+def find_key(use_pool=True):
+    # reset our global structures
     t.fill(0)
     counts.fill(0)
 
@@ -177,9 +179,10 @@ def find_key():
 
     data_loader = DataLoader(traces, 1_000)
 
-    pool = mp.Pool(processes=4)
-    jobs = []
-    key_found = False
+    if use_pool:
+        pool = mp.Pool(processes=THREADS)
+        jobs = []
+        key_found = False
 
     start_time = time.time()
     while True:
@@ -196,24 +199,31 @@ def find_key():
         # Find the smallest delta for each i,j pair
         calculate_delta_primes()
 
-        worker = pool.apply_async(
-            guess_key_worker,
-            args=(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
-        )
-        jobs.append(worker)
+        if use_pool:
+            worker = pool.apply_async(
+                guess_key_worker,
+                args=(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
+            )
+            jobs.append(worker)
 
-        # Check if we've got any results from the pool
-        for job in jobs:
-            if job.ready():
-                status, key, samples_required = job.get()
-                if status:
-                    key_found = True
-                    print('FOUND THE KEY!', key)
-                    break
-        if key_found:
-            pool.terminate()
-            pool.join()
-            break
+            # Check if we've got any results from the pool
+            for job in jobs:
+                if job.ready():
+                    status, key, samples_required = job.get()
+                    if status:
+                        key_found = True
+                        print('FOUND THE KEY!', key)
+                        break
+            if key_found:
+                pool.terminate()
+                pool.join()
+                break
+        else:  # just call them normally
+            status, key, samples_required = guess_key_worker(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
+            if status:
+                print('FOUND THE KEY!', key)
+                break
+
     
     print(f'Total elapsed time: {time.time() - start_time:.2f}')
     print(f'Samples required: {samples_required}')
@@ -221,7 +231,7 @@ def find_key():
 
 
 def main():
-    find_key()
+    find_key(use_pool=True)
 
 
 if __name__ == '__main__':
