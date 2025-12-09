@@ -159,6 +159,27 @@ def guess_key_worker(delta_primes, test_pt, test_ct, samples_loaded) -> tuple[bo
     # None of the rows in delta prime worked
     return False, None, samples_loaded
 
+def guess_key_vectorized_worker(delta_primes, test_pt, test_ct, samples_loaded) -> tuple[bool, str|None, int]:
+    """Vectorized version of the guess key worker"""
+    test_pt_bytes = bytes.fromhex(test_pt)
+
+    # Pre make the list of candidate bytes
+    candidate_bytes = np.arange(255, dtype=np.uint8)
+
+    for test_byte_index in range(16):  # only testing the first row might be faster, but testing all them requires less samples
+        row = delta_primes[test_byte_index].astype(np.uint8)
+        k10_matrix = candidate_bytes[:, None] ^ row[None, :]
+        k10_bytes_list = [bytes(row) for row in k10_matrix]
+        candidate_keys = [get_k_from_k10(k10.hex()) for k10 in k10_bytes_list]
+
+        # Test all the keys
+        for candidate_key in candidate_keys:
+            cipher = AES.new(bytes.fromhex(candidate_key), AES.MODE_ECB)
+            result_ct = cipher.encrypt(test_pt_bytes).hex()
+
+            if result_ct == test_ct:
+                return True, candidate_key, samples_loaded
+    return False, None, samples_loaded
 
 def find_key(use_pool=True):
     # reset our global structures
@@ -198,7 +219,8 @@ def find_key(use_pool=True):
 
         if use_pool:
             worker = pool.apply_async(
-                guess_key_worker,
+                #guess_key_worker,
+                guess_key_vectorized_worker,
                 args=(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
             )
             jobs.append(worker)
