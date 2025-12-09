@@ -142,7 +142,7 @@ def guess_key_worker(delta_primes, test_pt, test_ct, samples_loaded) -> tuple[bo
     # Will try brute force guessing to see how many bytes of the key we can get right
     # Try every byte for the first byte of the round 10 key. The other 15 bytes are calculated using the offsets delta[0,i] for 0 <= i <= 15
     # Then does the same thing for all the other bytes because only one of the rows might give us the answer
-    for test_byte_index in range(16):  # only testing the first row is faster BUT requires more samples
+    for test_byte_index in range(1):  # only testing the first row is faster BUT requires more samples
         for candidate_byte in range(255):
             candidate_k10_list = [(candidate_byte ^ int(val)) for val in delta_primes[test_byte_index]]
             candidate_k10_str = ''.join(byte_to_str(val) for val in candidate_k10_list)
@@ -242,7 +242,7 @@ def find_key(use_pool=True):
                 pool.join()
                 break
         else:  # just call them normally
-            status, key, samples_required = guess_key_worker(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
+            status, key, samples_required = guess_key_vectorized_worker(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
             if status:
                 print('FOUND THE KEY!', key)
                 break
@@ -251,6 +251,39 @@ def find_key(use_pool=True):
     print(f'Total elapsed time: {time.time() - start_time:.2f}')
     print(f'Samples required: {samples_required}')
     return samples_required
+
+
+def find_key_success_rate(num_samples) -> bool:
+    t.fill(0)
+    counts.fill(0)
+
+    data = load_data(DATA_FILEPATH)
+    traces = data['traces']
+    random.shuffle(traces)
+
+    test_pt = traces[0]['pt']
+    test_ct = traces[0]['ct']
+
+    print(f'Loaded {len(traces)} traces from the data file.')
+
+    data_loader = DataLoader(traces, num_samples)
+
+    start_time = time.time()
+    # Load batch size of samples
+    for sample in data_loader.load_samples():
+        ct = sample['ct']
+        cycles = sample['t']
+        update_t(ct, cycles)
+    
+    # Find the smallest delta for each i,j pair
+    calculate_delta_primes()
+
+    status, key, samples_required = guess_key_vectorized_worker(delta_primes.copy(), test_pt, test_ct, data_loader.samples_loaded)
+    if status:
+        print('FOUND THE KEY!', key)
+        return True
+    else:
+        return False
 
 
 def main():
