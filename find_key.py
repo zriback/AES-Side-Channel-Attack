@@ -113,12 +113,9 @@ def load_data(data_filepath: str) -> dict:
 
 def calculate_delta_primes():
     """Updates the global delta_primes using the global t"""
-    for i in range(16):
-        for j in range(16):
-            # Must ignore values that are not possible (just means we did not have enough data)
-            # For the full test we should always have enough data. For testing and smaller values of SAMPLE_LIMIT, we might not, though
-            min_delta = np.argmin([val for val in t[i][j] if val > 0])
-            delta_primes[i][j] = min_delta
+    # Get rid of zeroes because they might mess up the calculation
+    masked = np.where(t > 0, t, np.inf)
+    delta_primes[:] = np.argmin(masked, axis=2)
 
 
 def update_t(ct, cycles):
