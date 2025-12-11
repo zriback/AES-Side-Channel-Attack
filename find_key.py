@@ -142,8 +142,8 @@ def guess_key_worker(delta_primes, test_pt, test_ct, samples_loaded) -> tuple[bo
     # Will try brute force guessing to see how many bytes of the key we can get right
     # Try every byte for the first byte of the round 10 key. The other 15 bytes are calculated using the offsets delta[0,i] for 0 <= i <= 15
     # Then does the same thing for all the other bytes because only one of the rows might give us the answer
-    for test_byte_index in range(1):  # only testing the first row is faster BUT requires more samples
-        for candidate_byte in range(255):
+    for test_byte_index in range(16):  # only testing the first row is faster BUT requires more samples
+        for candidate_byte in range(256):
             candidate_k10_list = [(candidate_byte ^ int(val)) for val in delta_primes[test_byte_index]]
             candidate_k10_str = ''.join(byte_to_str(val) for val in candidate_k10_list)
             candidate_k_str = get_k_from_k10(candidate_k10_str)
